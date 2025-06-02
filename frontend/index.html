@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Legal Case Finder</title>
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .loading {
+            display: none;
+        }
+        .loading.active {
+            display: block;
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .result-card {
+            transition: transform 0.2s ease-in-out;
+        }
+        .result-card:hover {
+            transform: translateY(-2px);
+        }
+        .saved {
+            color: #2563eb;
+        }
+        #historyPanel {
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+        }
+        #historyPanel.active {
+            transform: translateX(0);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- History Panel -->
+    <div id="historyPanel" class="fixed right-0 top-0 h-full w-80 bg-white shadow-lg p-4 z-50">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">Search History</h3>
+            <button onclick="toggleHistory()" class="text-gray-500 hover:text-gray-700">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div id="historyList" class="space-y-4"></div>
+    </div>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        function App() {
+            const [query, setQuery] = React.useState('');
+            const [results, setResults] = React.useState([]);
+            const [loading, setLoading] = React.useState(false);
+            const [error, setError] = React.useState(null);
+            const [savedCases, setSavedCases] = React.useState([]);
+            const [searchHistory, setSearchHistory] = React.useState([]);
+
+            const factPattern = React.useRef(null);
+            const charCount = React.useRef(null);
+            const searchButton = React.useRef(null);
+            const exportBtn = React.useRef(null);
+            const historyPanel = React.useRef(null);
+            
+            const updateCharacterCount = () => {
+                const count = factPattern.current.value.length;
+                charCount.current.textContent = `${count} characters`;
+                
+                searchButton.current.disabled = count < 20;
+                if (count < 20) {
+                    searchButton.current.classList.add('opacity-50', 'cursor-not-allowed');
+                } else {
+                    searchButton.current.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+            };
+
+            const toggleHistory = () => {
+                historyPanel.current.classList.toggle('active');
+                updateHistoryList();
+            };
+
+            const updateHistoryList = () => {
+                const historyList = document.getElementById('historyList');
+                historyList.innerHTML = searchHistory.map((search, index) => `
+                    <div class="p-3 bg-gray-50 rounded-md hover:bg-gray-100 cursor-pointer"
+                         onclick="rerunSearch('${encodeURIComponent(search.query)}')">
+                        <div class="text-sm text-gray-600">${new Date(search.timestamp).toLocaleString()}</div>
+                        <div class="text-gray-800 mt-1">${search.query.substring(0, 100)}${search.query.length > 100 ? '...' : ''}</div>
+                    </div>
+                `).join('');
+            };
+
+            const rerunSearch = (query) => {
+                setQuery(decodeURIComponent(query));
+                historyPanel.current.classList.remove('active');
+                document.getElementById('searchForm').dispatchEvent(new Event('submit'));
+            };
+
+            const toggleSaveCase = (caseId) => {
+                const caseData = results.find(c => c.url === caseId);
+                const savedIndex = savedCases.findIndex(c => c.url === caseId);
+                
+                if (savedIndex === -1) {
+                    setSavedCases([...savedCases, caseData]);
+                    document.querySelector(`[data-case-id="${caseId}"]`).classList.add('saved');
+                } else {
+                    setSavedCases(savedCases.filter(c => c.url !== caseId));
+                    document.querySelector(`[data-case-id="${caseId}"]`).classList.remove('saved');
+                }
+                
+                localStorage.setItem('savedCases', JSON.stringify(savedCases));
+                updateSavedCount();
+            };
+
+            const updateSavedCount = () => {
+                const count = savedCases.length;
+                exportBtn.current.disabled = count === 0;
+                exportBtn.current.textContent = count ? `${count} case${count === 1 ? '' : 's'} saved` : '';
+            };
+
+            const exportResults = () => {
+                const exportData = {
+                    timestamp: new Date().toISOString(),
+                    query: query,
+                    savedCases: savedCases
+                };
+
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `legal-cases-${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            const searchCases = async () => {
+                if (!query.trim()) return;
+                
+                setLoading(true);
+                setError(null);
+                
+                try {
+                    const API_URL = window.location.hostname === 'localhost' 
+                        ? 'http://localhost:8000' 
+                        : 'https://legal-case-finder.onrender.com';
+
+                    const response = await fetch(`${API_URL}/search`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ fact_pattern: query }),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Search failed. Please try again.');
+                    }
+
+                    const data = await response.json();
+                    setResults(data);
+                    
+                    // Save to history
+                    setSearchHistory([{
+                        query,
+                        timestamp: new Date().toISOString()
+                    }, ...searchHistory.slice(0, 19)]);
+                    localStorage.setItem('searchHistory', JSON.stringify(searchHistory));
+                    
+                    if (data.length === 0) {
+                        setResults([{
+                            title: 'No similar cases found',
+                            summary: 'Try rephrasing your fact pattern or adding more details.',
+                            url: '#'
+                        }]);
+                        return;
+                    }
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="container mx-auto px-4 py-8">
+                    <header className="text-center mb-12">
+                        <h1 className="text-4xl font-bold text-gray-800 mb-2">Legal Case Finder</h1>
+                        <p className="text-gray-600">Find similar legal cases based on fact patterns</p>
+                    </header>
+
+                    <div className="max-w-3xl mx-auto">
+                        <!-- Toolbar -->
+                        <div className="bg-white p-4 rounded-lg shadow-sm mb-4 flex justify-between items-center">
+                            <div className="flex space-x-2">
+                                <button onClick={toggleHistory} className="px-3 py-2 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors">
+                                    <i className="fas fa-history mr-2"></i>History
+                                </button>
+                                <button ref={exportBtn} onClick={exportResults} className="px-3 py-2 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors" disabled>
+                                    <i className="fas fa-download mr-2"></i>Export
+                                </button>
+                            </div>
+                            <div id="savedCount" className="text-sm text-gray-600"></div>
+                        </div>
+
+                        <!-- Main Content -->
+                        <div className="bg-white rounded-lg shadow-lg p-6">
+                            <form id="searchForm" className="space-y-6">
+                                <div>
+                                    <label htmlFor="factPattern" className="block text-sm font-medium text-gray-700 mb-2">
+                                        Enter Fact Pattern
+                                    </label>
+                                    <div className="relative">
+                                        <textarea
+                                            ref={factPattern}
+                                            id="factPattern"
+                                            rows="4"
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            placeholder="Example: A car accident occurred when the defendant ran a red light and collided with the plaintiff's vehicle..."
+                                            required
+                                            minlength="20"
+                                            onInput={updateCharacterCount}
+                                        ></textarea>
+                                        <div ref={charCount} className="absolute bottom-2 right-2 text-sm text-gray-500"></div>
+                                    </div>
+                                    <p className="mt-1 text-sm text-gray-500">
+                                        Tip: Include key facts, parties involved, and the main legal issue
+                                    </p>
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200"
+                                    onClick={searchCases}
+                                    disabled={loading || !query.trim()}
+                                    id="searchButton"
+                                >
+                                    {loading ? 'Searching...' : 'Search Similar Cases'}
+                                </button>
+                            </form>
+
+                            {error && (
+                                <div className="bg-red-50 p-4 rounded-lg fade-in">
+                                    <p className="text-red-600">{error}</p>
+                                    <p className="text-red-500 text-sm mt-2">Please try again in a few moments.</p>
+                                </div>
+                            )}
+
+                            <div id="results" className="mt-8 space-y-4">
+                                {results.map((result, index) => (
+                                    <div key={index} className="bg-gray-50 p-4 rounded-lg shadow-sm hover:shadow-md result-card fade-in" style={{ animationDelay: `${index * 100}ms` }}>
+                                        <div className="flex justify-between items-start">
+                                            <h3 className="text-lg font-semibold text-gray-800 flex-grow">
+                                                <a href={result.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-600 hover:underline">
+                                                    {result.title}
+                                                </a>
+                                            </h3>
+                                            <div className="flex items-center space-x-2">
+                                                <button onClick={() => toggleSaveCase(result.url)}
+                                                        className="text-gray-400 hover:text-blue-600 transition-colors"
+                                                        data-case-id={result.url}>
+                                                    <i className={`fas fa-bookmark ${savedCases.some(c => c.url === result.url) ? 'saved' : ''}`}></i>
+                                                </button>
+                                                <span className="px-2 py-1 bg-blue-100 text-blue-800 text-sm rounded-full">
+                                                    Similarity Score: {(result.similarity_score * 100).toFixed(1)}%
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <p className="text-gray-600 mt-2">{result.summary}</p>
+                                        <div className="mt-3 flex justify-end">
+                                            <a href={result.url} target="_blank" rel="noopener noreferrer" 
+                                               className="text-sm text-blue-600 hover:text-blue-800 hover:underline">
+                                                Read full case →
+                                            </a>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html> 
